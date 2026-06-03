@@ -1,0 +1,29 @@
+.categories {
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+  margin: 2rem 0;
+}
+
+.category-card {
+  padding: 2rem;
+  background: #fff;
+  border-radius: 1rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  cursor: pointer;
+  min-width: 220px;
+  transition: transform 0.09s;
+}
+.category-card:hover {
+  transform: scale(1.04);
+  background: #fbeee0;
+}
+
+.category-details {
+  margin-top: 2rem;
+  background: #fff;
+  padding: 2rem;
+  border-radius: 1rem;
+  display: inline-block;
+}
