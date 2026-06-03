@@ -8,6 +8,7 @@ const STORAGE_KEY = 'attendance-home-data'
 const FIRESTORE_COLLECTION = 'attendanceRegisters'
 const FIRESTORE_DOC_ID = 'main'
 const ADMIN_PASSWORD = 'PKSDDSTHA'
+const DEFAULT_CATEGORY_IDS = new Set(DEFAULT_CLASS_SLOTS.map((slot) => slot.id))
 const NON_NAME_WORDS = new Set([
   'emoji',
   'sticker',
@@ -142,11 +143,14 @@ function extractNames(text) {
   return [...new Set(names)]
 }
 
-function mergeDefaultCategories(categories) {
+function mergeDefaultCategories(categories, deletedDefaultCategoryIds = []) {
   const storedCategories = Array.isArray(categories) ? categories : []
   const defaultCategories = createInitialCategories()
   const storedIds = new Set(storedCategories.map((category) => category.id))
-  const missingDefaults = defaultCategories.filter((category) => !storedIds.has(category.id))
+  const deletedDefaultIds = new Set(deletedDefaultCategoryIds)
+  const missingDefaults = defaultCategories.filter(
+    (category) => !storedIds.has(category.id) && !deletedDefaultIds.has(category.id),
+  )
 
   return [
     ...storedCategories.map((category) => ({
@@ -161,23 +165,59 @@ function mergeDefaultCategories(categories) {
   ]
 }
 
-function readStoredCategories() {
+function parseStoredRegister() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
-    return stored ? mergeDefaultCategories(JSON.parse(stored)) : createInitialCategories()
+    const parsed = stored ? JSON.parse(stored) : null
+
+    if (Array.isArray(parsed)) {
+      return {
+        categories: mergeDefaultCategories(parsed),
+        deletedDefaultCategoryIds: [],
+      }
+    }
+
+    const deletedDefaultCategoryIds = Array.isArray(parsed?.deletedDefaultCategoryIds)
+      ? parsed.deletedDefaultCategoryIds
+      : []
+
+    return {
+      categories: parsed?.categories
+        ? mergeDefaultCategories(parsed.categories, deletedDefaultCategoryIds)
+        : createInitialCategories(),
+      deletedDefaultCategoryIds,
+    }
   } catch {
-    return createInitialCategories()
+    return {
+      categories: createInitialCategories(),
+      deletedDefaultCategoryIds: [],
+    }
   }
+}
+
+function writeStoredRegister(categories, deletedDefaultCategoryIds) {
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      categories,
+      deletedDefaultCategoryIds,
+    }),
+  )
 }
 
 function App() {
   const todayKey = getTodayKey()
+  const storedRegister = useMemo(parseStoredRegister, [])
   const isApplyingRemoteData = useRef(false)
   const hasLoadedFirestore = useRef(false)
   const [mode, setMode] = useState('viewer')
   const [selectedDate, setSelectedDate] = useState(todayKey)
-  const [categories, setCategories] = useState(readStoredCategories)
+  const [categories, setCategories] = useState(storedRegister.categories)
   const latestCategories = useRef(categories)
+  const [deletedDefaultCategoryIds, setDeletedDefaultCategoryIds] = useState(
+    storedRegister.deletedDefaultCategoryIds,
+  )
+  const latestDeletedDefaultCategoryIds = useRef(deletedDefaultCategoryIds)
   const [syncStatus, setSyncStatus] = useState(
     isFirebaseConfigured ? 'Connecting to Firestore...' : 'Using local browser storage.',
   )
@@ -199,6 +239,10 @@ function App() {
   }, [categories])
 
   useEffect(() => {
+    latestDeletedDefaultCategoryIds.current = deletedDefaultCategoryIds
+  }, [deletedDefaultCategoryIds])
+
+  useEffect(() => {
     if (!db) {
       return undefined
     }
@@ -209,12 +253,22 @@ function App() {
       registerRef,
       async (snapshot) => {
         if (snapshot.exists()) {
-          const nextCategories = mergeDefaultCategories(snapshot.data().categories)
+          const registerData = snapshot.data()
+          const nextDeletedDefaultCategoryIds = Array.isArray(
+            registerData.deletedDefaultCategoryIds,
+          )
+            ? registerData.deletedDefaultCategoryIds
+            : []
+          const nextCategories = mergeDefaultCategories(
+            registerData.categories,
+            nextDeletedDefaultCategoryIds,
+          )
 
           isApplyingRemoteData.current = true
           hasLoadedFirestore.current = true
           setCategories(nextCategories)
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(nextCategories))
+          setDeletedDefaultCategoryIds(nextDeletedDefaultCategoryIds)
+          writeStoredRegister(nextCategories, nextDeletedDefaultCategoryIds)
           setSyncStatus('Synced with Firestore.')
           return
         }
@@ -225,6 +279,7 @@ function App() {
         try {
           await setDoc(registerRef, {
             categories: latestCategories.current,
+            deletedDefaultCategoryIds: latestDeletedDefaultCategoryIds.current,
             updatedAt: serverTimestamp(),
           })
           setSyncStatus('Synced with Firestore.')
@@ -239,7 +294,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(categories))
+    writeStoredRegister(categories, deletedDefaultCategoryIds)
 
     if (isApplyingRemoteData.current) {
       isApplyingRemoteData.current = false
@@ -258,6 +313,7 @@ function App() {
       try {
         await setDoc(doc(db, FIRESTORE_COLLECTION, FIRESTORE_DOC_ID), {
           categories,
+          deletedDefaultCategoryIds,
           updatedAt: serverTimestamp(),
         })
         setSyncStatus('Synced with Firestore.')
@@ -267,7 +323,7 @@ function App() {
     }
 
     saveCategories()
-  }, [categories])
+  }, [categories, deletedDefaultCategoryIds])
 
   useEffect(() => {
     return () => {
@@ -527,6 +583,16 @@ function App() {
   }
 
   function removeCategory(categoryId) {
+    if (DEFAULT_CATEGORY_IDS.has(categoryId)) {
+      setDeletedDefaultCategoryIds((current) =>
+        current.includes(categoryId) ? current : [...current, categoryId],
+      )
+    }
+
+    if (activeCategoryId === categoryId) {
+      setActiveCategoryId('')
+    }
+
     setCategories((current) => current.filter((category) => category.id !== categoryId))
   }
 
